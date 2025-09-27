@@ -10,3 +10,6 @@
 *.jpg  binary
 *.gif  binary
 *.whl  binary
+
+git config core.autocrlf false    # or 'input' on mac/linux
+
