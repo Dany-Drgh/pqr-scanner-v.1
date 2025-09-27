@@ -1,0 +1,12 @@
+# .gitattributes
+* text=auto
+*.py   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.sh   text eol=lf
+
+# treat these as binary (no EOL normalization)
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.whl  binary
