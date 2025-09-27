@@ -1,0 +1,7 @@
+# Minimal working rule to prove the pipeline:
+- id: PY-REQ-NOVERIFY
+  title: "TLS verification disabled in requests call"
+  severity: Medium
+  regex_any:
+    - "requests\\.(get|post|put|delete|patch|head)\\([^\\)]*verify\\s*=\\s*False"
+  fix: "Avoid verify=False; use a valid CA bundle or pinning with care."
