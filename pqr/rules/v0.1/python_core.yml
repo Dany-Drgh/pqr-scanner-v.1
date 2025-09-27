@@ -1,4 +1,4 @@
-# Minimal working rule to prove the pipeline:
+---
 - id: PY-REQ-NOVERIFY
   title: "TLS verification disabled in requests call"
   severity: Medium

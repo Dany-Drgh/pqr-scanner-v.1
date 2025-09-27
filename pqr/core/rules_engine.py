@@ -4,12 +4,14 @@ import yaml
 
 RULES_DIR = Path(__file__).resolve().parents[1] / "rules"
 
+
 def _resolve_pack_dir(label: str) -> Path:
     idx_path = RULES_DIR / "index.yaml"
     index = yaml.safe_load(idx_path.read_text(encoding="utf-8"))
     if label == "latest":
         label = index.get("latest", "v0.1")
     return RULES_DIR / label
+
 
 def load_rules(label: str):
     pack_dir = _resolve_pack_dir(label)
