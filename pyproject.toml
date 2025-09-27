@@ -8,7 +8,7 @@ version = "0.0.1"
 description = "Post-Quantum Readiness scanner (Python-first MVP)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "ALL RIGHTS RESERVED"
+license = "MIT"
 authors = [{ name = "Dany A. Darghouth" }]
 dependencies = ["PyYAML>=6.0.1"]
 
