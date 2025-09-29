@@ -16,15 +16,6 @@
       jwt\s*\.\s*encode\s*\([^)]*algorithm\s*=\s*['"](RS|ES)\d{3}['"]
   fix: "Plan a migration to PQ-capable tokens or reduce token lifetimes during transition."
 
-# classical JWT (regex safety net; AST also handles it)
-- id: PY-JWT-CLASSICAL-SIG
-  title: "JWT using classical signature algorithm (RS*/ES*/PS*)"
-  severity: High
-  regex_any:
-    - >-
-      jwt\s*\.\s*encode\s*\([^)]*algorithm\s*=\s*['"](RS|ES|PS)\d{3}['"]
-  fix: "Plan migration to PQ signatures (ML-DSA/SLH-DSA/FN-DSA) or reduce token lifetime."
-
 # openssl CLI generating classical signatures/keys (informational context)
 - id: TOOL-OPENSSL-SIGN
   title: "OpenSSL classical signing detected"
@@ -35,7 +26,7 @@
   fix: "Prefer PQ or hybrid signatures for long-lived artifacts."
 
 
-# JWT using classical sig (policy-driven)
+# JWT using classical sig
 - id: PY-JWT-CLASSICAL-SIG
   title: "JWT using classical signature algorithm (RS*/ES*/PS*)"
   severity: High
@@ -46,18 +37,6 @@
           kw_in_policy:
             algorithm: "jwt_classical_prefixes"
   fix: "Plan migration to PQ signatures or shorten token lifetimes."
-
-# requests verify=False (AST)
-- id: PY-REQ-NOVERIFY
-  title: "TLS verification disabled in requests call"
-  severity: Medium
-  ast:
-    any:
-      - call:
-          callee_regex: "^requests\\.(get|post|put|delete|patch|head|request)$"
-          kw_equals:
-            verify: false
-  fix: "Avoid verify=False; use a valid CA bundle or pinning."
 
 # Weak hash usage
 - id: PY-HASH-MD5-SHA1
@@ -94,14 +73,5 @@
     - >-
       \bopenssl\s+genrsa\b
   fix: "Avoid new RSA keys for long-lived assets; plan PQ/hybrid migration."
-
-# OpenSSL classical signing
-- id: TOOL-OPENSSL-SIGN
-  title: "OpenSSL classical signing detected"
-  severity: Medium
-  regex_any:
-    - >-
-      \bopenssl\s+(dgst|pkeyutl)\b.*-sign\b
-  fix: "Prefer PQ or hybrid signatures for long-lived artifacts."
 
 # yamllint enable rule:line-length
