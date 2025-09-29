@@ -2,9 +2,11 @@ from __future__ import annotations
 import re, json, shutil
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Iterable, List, Dict, Any
+from typing import Iterable, List, Dict, Any, Set, Tuple
 from datetime import datetime
+
 from .rules_engine import load_rules
+from ..analyzers.python_ast import analyze_python_file
 
 # Add built-in ignores so we never scan our own outputs
 DEFAULT_IGNORES = [
@@ -15,8 +17,11 @@ DEFAULT_IGNORES = [
     "**/.venv/**",
     "**/venv/**",
     "**/.pqr/**",  # default hidden output/cache
-    "**/pqr-scanner-report/**",  # your custom folder (if you keep it)
-    "**/report/**",  # legacy name, just in case
+    "**/pqr-scanner-report/**",  # optional custom folder
+    "**/report/**",  # legacy name
+    "**/node_modules/**",  # in case users have JS bits in repo
+    "**/dist/**",
+    "**/build/**",
 ]
 
 
@@ -94,20 +99,77 @@ def _prepare_outdir(root: Path, outdir: str, timestamped: bool, append: bool) ->
     return base
 
 
-def write_reports(outdir: Path, findings: List[Finding]) -> None:
-    with (outdir / "findings.json").open("w", encoding="utf-8") as f:
-        json.dump([asdict(fg) for fg in findings], f, indent=2, ensure_ascii=False)
-    with (outdir / "summary.md").open("w", encoding="utf-8") as f:
-        if findings:
-            f.write(f"# PQR Summary\n\nTotal findings: **{len(findings)}**\n\n")
-            for fg in findings[:20]:
-                f.write(
-                    f"- [{fg.severity}] {fg.id} — {fg.title} ({fg.file}:{fg.line})\n"
-                )
-            if len(findings) > 20:
-                f.write(f"\n…plus {len(findings) - 20} more.\n")
-        else:
-            f.write("# PQR Summary\n\nNo findings.\n")
+def _severity_to_level(sev: str) -> str:
+    sev = (sev or "").lower()
+    if sev in ("critical", "high"):
+        return "error"
+    if sev == "medium":
+        return "warning"
+    return "note"
+
+
+def write_reports(outdir: Path, findings: List[Finding], formats: List[str]) -> None:
+    formats = [f.lower() for f in (formats or ["md", "json", "sarif"])]
+
+    if "json" in formats:
+        with (outdir / "findings.json").open("w", encoding="utf-8") as f:
+            json.dump([asdict(fg) for fg in findings], f, indent=2, ensure_ascii=False)
+
+    if "md" in formats:
+        with (outdir / "summary.md").open("w", encoding="utf-8") as f:
+            if findings:
+                f.write(f"# PQR Summary\n\nTotal findings: **{len(findings)}**\n\n")
+                for fg in findings[:20]:
+                    f.write(
+                        f"- [{fg.severity}] {fg.id} — {fg.title} ({fg.file}:{fg.line})\n"
+                    )
+                if len(findings) > 20:
+                    f.write(f"\n…plus {len(findings) - 20} more.\n")
+            else:
+                f.write("# PQR Summary\n\nNo findings.\n")
+
+    if "sarif" in formats:
+        # Minimal SARIF 2.1.0
+        rules_meta = {}
+        for fg in findings:
+            rules_meta.setdefault(
+                fg.id,
+                {
+                    "id": fg.id,
+                    "name": fg.id,
+                    "shortDescription": {"text": fg.title},
+                    "defaultConfiguration": {"level": _severity_to_level(fg.severity)},
+                },
+            )
+        sarif = {
+            "version": "2.1.0",
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "runs": [
+                {
+                    "tool": {
+                        "driver": {"name": "pqr", "rules": list(rules_meta.values())}
+                    },
+                    "results": [
+                        {
+                            "ruleId": fg.id,
+                            "level": _severity_to_level(fg.severity),
+                            "message": {"text": fg.title},
+                            "locations": [
+                                {
+                                    "physicalLocation": {
+                                        "artifactLocation": {"uri": fg.file},
+                                        "region": {"startLine": fg.line},
+                                    }
+                                }
+                            ],
+                        }
+                        for fg in findings
+                    ],
+                }
+            ],
+        }
+        with (outdir / "pqr.sarif").open("w", encoding="utf-8") as f:
+            json.dump(sarif, f, indent=2, ensure_ascii=False)
 
 
 def scan_path(
@@ -118,6 +180,7 @@ def scan_path(
     outdir: str = ".pqr/report",
     timestamped: bool = False,
     append: bool = False,
+    formats: List[str] = None,
 ):
     rules = load_rules(rulepack_label)
     if debug:
@@ -129,16 +192,32 @@ def scan_path(
         print(f"[pqr] Will scan {len(files)} files under {root}")
 
     findings: List[Finding] = []
+    seen: Set[Tuple[str, str, int]] = set()  # (id, file, line)
+
     for fp in files:
         try:
             txt = fp.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
+
+        # AST checks for Python
+        if fp.suffix == ".py":
+            for d in analyze_python_file(str(fp), txt):
+                key = (d["id"], d["file"], d["line"])
+                if key not in seen:
+                    findings.append(Finding(**d))
+                    seen.add(key)
+
+        # Regex-based rulepack
         for rule in rules:
-            findings.extend(_match_rule_on_file(rule, fp, txt))
+            for fg in _match_rule_on_file(rule, fp, txt):
+                key = (fg.id, fg.file, fg.line)
+                if key not in seen:
+                    findings.append(fg)
+                    seen.add(key)
 
     out_path = _prepare_outdir(root, outdir, timestamped, append)
-    write_reports(out_path, findings)
+    write_reports(out_path, findings, formats or ["md", "json", "sarif"])
     if debug:
         print(f"[pqr] Wrote reports to {out_path}")
     return findings

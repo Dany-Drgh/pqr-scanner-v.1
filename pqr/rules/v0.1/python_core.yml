@@ -1,7 +1,17 @@
 ---
+# yamllint disable rule:line-length
 - id: PY-REQ-NOVERIFY
   title: "TLS verification disabled in requests call"
   severity: Medium
   regex_any:
     - "requests\\.(get|post|put|delete|patch|head)\\([^\\)]*verify\\s*=\\s*False"
   fix: "Avoid verify=False; use a valid CA bundle or pinning with care."
+
+- id: PY-JWT-RS-ES
+  title: "JWT signed with RS*/ES* (classical)"
+  severity: High
+  regex_any:
+    - >-
+      jwt\s*\.\s*encode\s*\([^)]*algorithm\s*=\s*['"](RS|ES)\d{3}['"]
+  fix: "Plan a migration to PQ-capable tokens or reduce token lifetimes during transition."
+# yamllint enable rule:line-length

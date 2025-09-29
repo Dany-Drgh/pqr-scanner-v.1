@@ -36,6 +36,12 @@ def main() -> int:
     p_scan.add_argument(
         "--append", action="store_true", help="Do not delete existing outdir content"
     )
+    p_scan.add_argument(
+        "--formats",
+        nargs="*",
+        default=["md", "json", "sarif"],
+        help="Which report formats to write (any of: md json sarif)",
+    )
     p_scan.add_argument("--debug", action="store_true", help="Print debug info")
 
     args = parser.parse_args()
@@ -50,9 +56,11 @@ def main() -> int:
             outdir=args.outdir,
             timestamped=args.timestamped,
             append=args.append,
+            formats=args.formats,
         )
         print(f"Scanned: {root}")
-        print(f"Findings: {len(findings)} (see ./report/)")
+        print(f"Findings: {len(findings)} (see {args.outdir})")
+        # Optional: keep your existing --fail-on-severity logic if you added it earlier.
         return 1 if findings else 0
 
     return 0
