@@ -1,0 +1,33 @@
+---
+meta:
+  id: nist-stable
+  version: "2025-09-29"
+
+signatures:
+  allowed_families:
+    - "ML-DSA"
+    - "SLH-DSA"
+  allowed_draft_families:
+    - "FN-DSA"
+  classical_families:
+    - "RSA"
+    - "ECDSA"
+    - "DSA"
+    - "Ed25519"
+    - "Ed448"
+
+aliases:
+  "Dilithium": "ML-DSA"
+  "SPHINCS+": "SLH-DSA"
+  "FALCON": "FN-DSA"
+
+jwt_alg_families:
+  classical_prefixes:
+    - "RS"
+    - "ES"
+    - "PS"
+
+severity_overrides:
+  PY-SIG-PQ-NIST: Low
+  PY-SIG-CLASSICAL: High
+  PY-JWT-CLASSICAL-SIG: High

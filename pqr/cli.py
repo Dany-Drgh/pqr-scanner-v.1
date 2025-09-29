@@ -44,6 +44,11 @@ def main() -> int:
     )
     p_scan.add_argument("--debug", action="store_true", help="Print debug info")
 
+    p_scan.add_argument(
+        "--policy",
+        default="latest",
+        help="Policy label to use (see pqr/policy/index.yaml, e.g. latest, nist-stable, nist-draft)",
+    )
     args = parser.parse_args()
 
     if args.cmd == "scan":
@@ -57,6 +62,7 @@ def main() -> int:
             timestamped=args.timestamped,
             append=args.append,
             formats=args.formats,
+            policy_label=args.policy,
         )
         print(f"Scanned: {root}")
         print(f"Findings: {len(findings)} (see {args.outdir})")

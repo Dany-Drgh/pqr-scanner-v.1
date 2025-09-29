@@ -1,0 +1,24 @@
+---
+meta:
+  id: nist-draft
+  version: "2025-09-29"
+
+signatures:
+  allowed_families:
+    - "ML-DSA"
+    - "SLH-DSA"
+  allowed_draft_families:
+    - "FN-DSA"
+
+aliases:
+  "Dilithium": "ML-DSA"
+  "SPHINCS+": "SLH-DSA"
+  "FALCON": "FN-DSA"
+
+jwt_alg_families:
+  classical_prefixes:
+    - "RS"
+    - "ES"
+    - "PS"
+
+severity_overrides: {}

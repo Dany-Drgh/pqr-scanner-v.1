@@ -1,5 +1,6 @@
 ---
 # yamllint disable rule:line-length
+# Example Rule : Ensure TLS verificiation is enabled in request call
 - id: PY-REQ-NOVERIFY
   title: "TLS verification disabled in requests call"
   severity: Medium
@@ -14,4 +15,93 @@
     - >-
       jwt\s*\.\s*encode\s*\([^)]*algorithm\s*=\s*['"](RS|ES)\d{3}['"]
   fix: "Plan a migration to PQ-capable tokens or reduce token lifetimes during transition."
+
+# classical JWT (regex safety net; AST also handles it)
+- id: PY-JWT-CLASSICAL-SIG
+  title: "JWT using classical signature algorithm (RS*/ES*/PS*)"
+  severity: High
+  regex_any:
+    - >-
+      jwt\s*\.\s*encode\s*\([^)]*algorithm\s*=\s*['"](RS|ES|PS)\d{3}['"]
+  fix: "Plan migration to PQ signatures (ML-DSA/SLH-DSA/FN-DSA) or reduce token lifetime."
+
+# openssl CLI generating classical signatures/keys (informational context)
+- id: TOOL-OPENSSL-SIGN
+  title: "OpenSSL classical signing detected"
+  severity: Medium
+  regex_any:
+    - >-
+      \bopenssl\s+(dgst|pkeyutl)\b.*-sign\b
+  fix: "Prefer PQ or hybrid signatures for long-lived artifacts."
+
+
+# JWT using classical sig (policy-driven)
+- id: PY-JWT-CLASSICAL-SIG
+  title: "JWT using classical signature algorithm (RS*/ES*/PS*)"
+  severity: High
+  ast:
+    any:
+      - call:
+          callee: "jwt.encode"
+          kw_in_policy:
+            algorithm: "jwt_classical_prefixes"
+  fix: "Plan migration to PQ signatures or shorten token lifetimes."
+
+# requests verify=False (AST)
+- id: PY-REQ-NOVERIFY
+  title: "TLS verification disabled in requests call"
+  severity: Medium
+  ast:
+    any:
+      - call:
+          callee_regex: "^requests\\.(get|post|put|delete|patch|head|request)$"
+          kw_equals:
+            verify: false
+  fix: "Avoid verify=False; use a valid CA bundle or pinning."
+
+# Weak hash usage
+- id: PY-HASH-MD5-SHA1
+  title: "Weak hash (MD5/SHA-1) usage"
+  severity: Medium
+  regex_any:
+    - >-
+      \bhashlib\.(md5|sha1)\s*\(
+  fix: "Use SHA-256+; for passwords use a KDF (argon2/scrypt/bcrypt)."
+
+# AES in ECB mode
+- id: PY-AES-ECB
+  title: "AES in ECB mode"
+  severity: High
+  regex_any:
+    - >-
+      modes\.ECB\s*\(
+  fix: "Use an AEAD mode (AES-GCM/ChaCha20-Poly1305)."
+
+# Old TLS protocol selected
+- id: PY-SSL-OLD-PROTO
+  title: "Old TLS protocol selected"
+  severity: Medium
+  regex_any:
+    - >-
+      ssl\.PROTOCOL_TLSv1(_1)?
+  fix: "Use TLS 1.2+; prefer TLS 1.3."
+
+# OpenSSL generating RSA key
+- id: TOOL-OPENSSL-GENRSA
+  title: "OpenSSL generating RSA key"
+  severity: High
+  regex_any:
+    - >-
+      \bopenssl\s+genrsa\b
+  fix: "Avoid new RSA keys for long-lived assets; plan PQ/hybrid migration."
+
+# OpenSSL classical signing
+- id: TOOL-OPENSSL-SIGN
+  title: "OpenSSL classical signing detected"
+  severity: Medium
+  regex_any:
+    - >-
+      \bopenssl\s+(dgst|pkeyutl)\b.*-sign\b
+  fix: "Prefer PQ or hybrid signatures for long-lived artifacts."
+
 # yamllint enable rule:line-length

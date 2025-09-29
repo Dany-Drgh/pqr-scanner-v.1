@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+from typing import List, Dict, Any
 import yaml
 
 RULES_DIR = Path(__file__).resolve().parents[1] / "rules"
@@ -13,14 +14,31 @@ def _resolve_pack_dir(label: str) -> Path:
     return RULES_DIR / label
 
 
-def load_rules(label: str):
+def _collect_yaml_files(pack_dir: Path):
+    # Load both .yml and .yaml
+    return sorted(list(pack_dir.glob("*.yml")) + list(pack_dir.glob("*.yaml")))
+
+
+def load_rules(label: str) -> List[Dict[str, Any]]:
     pack_dir = _resolve_pack_dir(label)
-    rules = []
-    for pattern in ("*.yml", "*.yaml"):
-        for yml in sorted(pack_dir.glob(pattern)):
-            doc = yaml.safe_load(yml.read_text(encoding="utf-8"))
+    rules: List[Dict[str, Any]] = []
+    yfiles = _collect_yaml_files(pack_dir)
+    if not yfiles:
+        return []  # nothing to load
+
+    for y in yfiles:
+        text = y.read_text(encoding="utf-8")
+        # Support multi-document yaml (--- ... --- ...)
+        for doc in yaml.safe_load_all(text):
+            if not doc:
+                continue
             if isinstance(doc, list):
                 rules.extend(doc)
             elif isinstance(doc, dict):
-                rules.append(doc)
+                # allow either a single rule or {rules: [...]}
+                if "rules" in doc and isinstance(doc["rules"], list):
+                    rules.extend(doc["rules"])
+                else:
+                    rules.append(doc)
+            # other node types are ignored
     return rules

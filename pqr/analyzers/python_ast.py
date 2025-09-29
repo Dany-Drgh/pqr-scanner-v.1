@@ -1,158 +1,266 @@
 from __future__ import annotations
+
 import ast
-from typing import List, Dict, Set
+from typing import Any, Dict, List, Set, Tuple
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch", "head", "request"}
 
 
-def _source_line(text: str, lineno: int) -> str:
+def _line(text: str, lineno: int) -> str:
     try:
         return text.splitlines()[lineno - 1].strip()[:500]
     except Exception:
         return ""
 
 
-def analyze_python_file(path: str, text: str) -> List[Dict]:
+def analyze_python_file(
+    path: str, text: str
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Returns a list of finding dicts with keys:
-    id, title, severity, file, line, evidence, fix
+    Parse Python and emit normalized AST 'events' + a small 'ctx' blob.
+    No policy or rule knowledge here.
+
+    Returns:
+      (events, ctx)
+
+    Event shapes (examples):
+      {"type":"import", "module":"jwt", "names":["encode"], "line": 1}
+      {"type":"call", "callee":"jwt.encode", "kwargs":{"algorithm":"RS256"}, "line": 10, "evidence":"..."}
+      {"type":"call", "callee":"requests.get", "kwargs":{"verify": False}, "line": 5, "evidence":"..."}
+      {"type":"assign_pq_signature", "alg":"ML-DSA-65", "target":"sig", "line": 7, "evidence":"..."}
+    Ctx:
+      {
+        "classical_asym_present": bool,
+        "pynacl_sign_present": bool,
+        "pq_sig_vars": set[str],             # variables bound to oqs.Signature(...)
+        "aliases": {"oqs": "oqs", ...},      # basic alias map for requests/jwt/oqs
+      }
     """
-    findings: List[Dict] = []
+    events: List[Dict[str, Any]] = []
+    ctx: Dict[str, Any] = {
+        "classical_asym_present": False,
+        "pynacl_sign_present": False,
+        "pq_sig_vars": set(),
+        "aliases": {},
+    }
+
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return findings
+        return events, ctx
 
-    # Track aliases: import requests as req; import jwt as pyjwt; from requests import get
     request_aliases: Set[str] = set()
     request_funcs: Set[str] = set()
     jwt_aliases: Set[str] = set()
     jwt_funcs: Set[str] = set()
+    oqs_aliases: Set[str] = set()
+    signature_ctor_names: Set[str] = set()
 
     class ImportTracker(ast.NodeVisitor):
         def visit_Import(self, node: ast.Import) -> None:
             for alias in node.names:
-                if alias.name == "requests":
-                    request_aliases.add(alias.asname or alias.name)
-                if alias.name == "jwt":
-                    jwt_aliases.add(alias.asname or alias.name)
+                name = alias.name
+                asname = alias.asname or alias.name
+                if name == "requests":
+                    request_aliases.add(asname)
+                    ctx["aliases"]["requests"] = asname
+                    events.append(
+                        {
+                            "type": "import",
+                            "module": "requests",
+                            "names": [],
+                            "line": getattr(node, "lineno", 0),
+                        }
+                    )
+                elif name == "jwt":
+                    jwt_aliases.add(asname)
+                    ctx["aliases"]["jwt"] = asname
+                    events.append(
+                        {
+                            "type": "import",
+                            "module": "jwt",
+                            "names": [],
+                            "line": getattr(node, "lineno", 0),
+                        }
+                    )
+                elif name == "oqs":
+                    oqs_aliases.add(asname)
+                    ctx["aliases"]["oqs"] = asname
+                    events.append(
+                        {
+                            "type": "import",
+                            "module": "oqs",
+                            "names": [],
+                            "line": getattr(node, "lineno", 0),
+                        }
+                    )
+                elif name == "nacl.signing":
+                    ctx["pynacl_sign_present"] = True
+                    events.append(
+                        {
+                            "type": "import",
+                            "module": "nacl.signing",
+                            "names": [],
+                            "line": getattr(node, "lineno", 0),
+                        }
+                    )
 
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-            if node.module == "requests":
+            mod = node.module or ""
+            names = [a.asname or a.name for a in node.names]
+            if mod == "requests":
+                for n in names:
+                    request_funcs.add(n)
+                events.append(
+                    {
+                        "type": "import",
+                        "module": mod,
+                        "names": names,
+                        "line": getattr(node, "lineno", 0),
+                    }
+                )
+            elif mod == "jwt":
+                for n in names:
+                    jwt_funcs.add(n)
+                events.append(
+                    {
+                        "type": "import",
+                        "module": mod,
+                        "names": names,
+                        "line": getattr(node, "lineno", 0),
+                    }
+                )
+            elif mod.startswith("cryptography.hazmat.primitives.asymmetric"):
+                ctx["classical_asym_present"] = True
+                events.append(
+                    {
+                        "type": "import",
+                        "module": mod,
+                        "names": names,
+                        "line": getattr(node, "lineno", 0),
+                    }
+                )
+            elif mod == "nacl.signing":
+                ctx["pynacl_sign_present"] = True
+                events.append(
+                    {
+                        "type": "import",
+                        "module": mod,
+                        "names": names,
+                        "line": getattr(node, "lineno", 0),
+                    }
+                )
+            elif mod == "oqs":
                 for alias in node.names:
-                    request_funcs.add(alias.asname or alias.name)
-            if node.module == "jwt":
-                for alias in node.names:
-                    jwt_funcs.add(alias.asname or alias.name)
+                    if (alias.asname or alias.name) == "Signature":
+                        signature_ctor_names.add("Signature")
+                events.append(
+                    {
+                        "type": "import",
+                        "module": mod,
+                        "names": names,
+                        "line": getattr(node, "lineno", 0),
+                    }
+                )
 
-    class CallScanner(ast.NodeVisitor):
-        def visit_Call(self, node: ast.Call) -> None:
-            # Determine callee kind and name
-            callee_name = None
-            # e.g., requests.get(...)
-            if isinstance(node.func, ast.Attribute) and isinstance(
-                node.func.value, ast.Name
+    ImportTracker().visit(tree)
+
+    # Assign tracking: sig = oqs.Signature("ALG")
+    class AssignTracker(ast.NodeVisitor):
+        def visit_Assign(self, node: ast.Assign) -> None:
+            call = node.value
+            if not isinstance(call, ast.Call):
+                return
+
+            # oqs.Signature("ALG") with oqs alias
+            if isinstance(call.func, ast.Attribute) and isinstance(
+                call.func.value, ast.Name
             ):
-                base = node.func.value.id
-                attr = node.func.attr
-                if base in request_aliases and attr in HTTP_METHODS:
-                    # requests.<method>(..., verify=False)
-                    for kw in node.keywords or []:
-                        if (
-                            kw.arg == "verify"
-                            and isinstance(kw.value, ast.Constant)
-                            and kw.value.value is False
-                        ):
-                            findings.append(
-                                {
-                                    "id": "PY-REQ-NOVERIFY",
-                                    "title": "TLS verification disabled in requests call",
-                                    "severity": "Medium",
-                                    "file": path,
-                                    "line": node.lineno,
-                                    "evidence": _source_line(text, node.lineno),
-                                    "fix": "Avoid verify=False; use a valid CA bundle or careful pinning.",
-                                }
-                            )
-                            break
-
-                if base in jwt_aliases and attr == "encode":
-                    # jwt.encode(..., algorithm="RS256"/"ES256")
-                    for kw in node.keywords or []:
-                        if (
-                            kw.arg == "algorithm"
-                            and isinstance(kw.value, ast.Constant)
-                            and isinstance(kw.value.value, str)
-                        ):
-                            alg = kw.value.value
-                            if (
-                                len(alg) >= 4
-                                and (alg.startswith("RS") or alg.startswith("ES"))
-                                and alg[2:].isdigit()
-                            ):
-                                findings.append(
+                if call.func.attr == "Signature" and call.func.value.id in oqs_aliases:
+                    args = call.args or []
+                    if (
+                        args
+                        and isinstance(args[0], ast.Constant)
+                        and isinstance(args[0].value, str)
+                    ):
+                        alg = args[0].value
+                        for t in node.targets:
+                            if isinstance(t, ast.Name):
+                                ctx["pq_sig_vars"].add(t.id)
+                                events.append(
                                     {
-                                        "id": "PY-JWT-RS-ES",
-                                        "title": "JWT signed with RS*/ES* (classical)",
-                                        "severity": "High",
-                                        "file": path,
+                                        "type": "assign_pq_signature",
+                                        "alg": alg,
+                                        "target": t.id,
                                         "line": node.lineno,
-                                        "evidence": _source_line(text, node.lineno),
-                                        "fix": "Plan a migration to PQ-capable tokens or reduce token lifetimes during transition.",
+                                        "evidence": _line(text, node.lineno),
                                     }
                                 )
-                            break
 
-            # e.g., get(..., verify=False) if `from requests import get`
-            if isinstance(node.func, ast.Name) and node.func.id in request_funcs:
-                for kw in node.keywords or []:
-                    if (
-                        kw.arg == "verify"
-                        and isinstance(kw.value, ast.Constant)
-                        and kw.value.value is False
-                    ):
-                        findings.append(
-                            {
-                                "id": "PY-REQ-NOVERIFY",
-                                "title": "TLS verification disabled in requests call",
-                                "severity": "Medium",
-                                "file": path,
-                                "line": node.lineno,
-                                "evidence": _source_line(text, node.lineno),
-                                "fix": "Avoid verify=False; use a valid CA bundle or careful pinning.",
-                            }
-                        )
-                        break
-
-            # e.g., encode(..., algorithm="RS256") if `from jwt import encode`
-            if isinstance(node.func, ast.Name) and node.func.id in jwt_funcs:
-                for kw in node.keywords or []:
-                    if (
-                        kw.arg == "algorithm"
-                        and isinstance(kw.value, ast.Constant)
-                        and isinstance(kw.value.value, str)
-                    ):
-                        alg = kw.value.value
-                        if (
-                            len(alg) >= 4
-                            and (alg.startswith("RS") or alg.startswith("ES"))
-                            and alg[2:].isdigit()
-                        ):
-                            findings.append(
+            # from oqs import Signature; Signature("ALG")
+            if isinstance(call.func, ast.Name) and call.func.id in {
+                "Signature",
+                *signature_ctor_names,
+            }:
+                args = call.args or []
+                if (
+                    args
+                    and isinstance(args[0], ast.Constant)
+                    and isinstance(args[0].value, str)
+                ):
+                    alg = args[0].value
+                    for t in node.targets:
+                        if isinstance(t, ast.Name):
+                            ctx["pq_sig_vars"].add(t.id)
+                            events.append(
                                 {
-                                    "id": "PY-JWT-RS-ES",
-                                    "title": "JWT signed with RS*/ES* (classical)",
-                                    "severity": "High",
-                                    "file": path,
+                                    "type": "assign_pq_signature",
+                                    "alg": alg,
+                                    "target": t.id,
                                     "line": node.lineno,
-                                    "evidence": _source_line(text, node.lineno),
-                                    "fix": "Plan a migration to PQ-capable tokens or reduce token lifetimes during transition.",
+                                    "evidence": _line(text, node.lineno),
                                 }
                             )
-                        break
+
+    AssignTracker().visit(tree)
+
+    # Calls scanning
+    class CallScanner(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            # Build a callee string like "requests.get" or "jwt.encode" or plain "encode"
+            callee = None
+            if isinstance(node.func, ast.Attribute):
+                base = node.func.value
+                if isinstance(base, ast.Name):
+                    callee = f"{base.id}.{node.func.attr}"
+                elif isinstance(base, ast.Call):
+                    # e.g., oqs.Signature("ALG").sign  -> callee stays ".sign" w/out base name
+                    callee = node.func.attr
+                else:
+                    callee = node.func.attr
+            elif isinstance(node.func, ast.Name):
+                callee = node.func.id
+
+            # Extract literal kwargs (constants only)
+            kwargs: Dict[str, Any] = {}
+            for kw in node.keywords or []:
+                if not isinstance(kw, ast.keyword) or kw.arg is None:
+                    continue
+                v = kw.value
+                if isinstance(v, ast.Constant):
+                    kwargs[kw.arg] = v.value
+
+            events.append(
+                {
+                    "type": "call",
+                    "callee": callee or "",
+                    "kwargs": kwargs,
+                    "line": getattr(node, "lineno", 0),
+                    "evidence": _line(text, getattr(node, "lineno", 0)),
+                }
+            )
 
             self.generic_visit(node)
 
-    ImportTracker().visit(tree)
     CallScanner().visit(tree)
-    return findings
+    return events, ctx

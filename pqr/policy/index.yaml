@@ -1,0 +1,5 @@
+---
+latest: nist-stable
+packs:
+  nist-stable: nist-stable.yaml
+  nist-draft: nist-draft.yaml

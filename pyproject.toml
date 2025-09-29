@@ -20,3 +20,7 @@ packages = ["pqr"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "pqr/rules" = "pqr/rules"
+"pqr/policy" = "pqr/policy"
+
+[project.optional-dependencies]
+test = ["pytest>=7.4"]
