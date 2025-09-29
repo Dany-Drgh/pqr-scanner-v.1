@@ -4,6 +4,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterable, List, Dict, Any, Set, Tuple
 from datetime import datetime
+from collections import Counter
 
 from .rules_engine import load_rules
 from ..analyzers.python_ast import analyze_python_file
@@ -108,13 +109,32 @@ def _severity_to_level(sev: str) -> str:
     return "note"
 
 
-def write_reports(outdir: Path, findings: List[Finding], formats: List[str]) -> None:
+def write_reports(
+    outdir: Path, findings: List[Finding], formats: List[str], meta: dict | None = None
+) -> None:
     formats = [f.lower() for f in (formats or ["md", "json", "sarif"])]
 
+    # findings.json (raw items)
     if "json" in formats:
         with (outdir / "findings.json").open("w", encoding="utf-8") as f:
             json.dump([asdict(fg) for fg in findings], f, indent=2, ensure_ascii=False)
 
+        # summary.json (rollups)
+        sev = Counter(f.severity for f in findings)
+        rid = Counter(f.id for f in findings)
+        files = Counter(f.file for f in findings)
+        summary = {
+            "generatedAt": datetime.utcnow().isoformat() + "Z",
+            "total": len(findings),
+            "bySeverity": dict(sev),
+            "topRules": [{"id": k, "count": v} for k, v in rid.most_common(10)],
+            "topFiles": [{"file": k, "count": v} for k, v in files.most_common(10)],
+            "meta": meta or {},
+        }
+        with (outdir / "summary.json").open("w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2, ensure_ascii=False)
+
+    # summary.md (human)
     if "md" in formats:
         with (outdir / "summary.md").open("w", encoding="utf-8") as f:
             if findings:
@@ -128,8 +148,8 @@ def write_reports(outdir: Path, findings: List[Finding], formats: List[str]) -> 
             else:
                 f.write("# PQR Summary\n\nNo findings.\n")
 
+    # pqr.sarif (for code-scanning UIs)
     if "sarif" in formats:
-        # Minimal SARIF 2.1.0
         rules_meta = {}
         for fg in findings:
             rules_meta.setdefault(
@@ -216,8 +236,9 @@ def scan_path(
                     findings.append(fg)
                     seen.add(key)
 
+    meta = {"rulepack": rulepack_label, "outdir": outdir}
     out_path = _prepare_outdir(root, outdir, timestamped, append)
-    write_reports(out_path, findings, formats or ["md", "json", "sarif"])
+    write_reports(out_path, findings, formats or ["md", "json", "sarif"], meta)
     if debug:
         print(f"[pqr] Wrote reports to {out_path}")
     return findings
