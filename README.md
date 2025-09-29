@@ -8,3 +8,4 @@ pqr scan examples/django-example
 ```
 
 Outputs: .pqr/report/ (JSON, MD, SARIF).
+**Requires Python 3.11+**
