@@ -1,34 +1,34 @@
 ---
 # yamllint disable rule:line-length
-# Example Rule : Ensure TLS verificiation is enabled in request call
+# ---------- HTTP / TLS ----------
 - id: PY-REQ-NOVERIFY
   title: "TLS verification disabled in requests call"
+  description: "Disables TLS certificate verification; enables MITM."
   severity: Medium
-  regex_any:
-    - "requests\\.(get|post|put|delete|patch|head)\\([^\\)]*verify\\s*=\\s*False"
-  fix: "Avoid verify=False; use a valid CA bundle or pinning with care."
+  ast:
+    any:
+      - call:
+          callee_regex: "^requests\\.(get|post|put|delete|patch|head|request)$"
+          kw_equals: {verify: false}
+  fix: "Avoid verify=false; use a CA bundle or careful pinning."
+  references:
+    - "https://requests.readthedocs.io/en/latest/user/advanced/#ssl-cert-verification"
 
-- id: PY-JWT-RS-ES
-  title: "JWT signed with RS*/ES* (classical)"
-  severity: High
-  regex_any:
-    - >-
-      jwt\s*\.\s*encode\s*\([^)]*algorithm\s*=\s*['"](RS|ES)\d{3}['"]
-  fix: "Plan a migration to PQ-capable tokens or reduce token lifetimes during transition."
-
-# openssl CLI generating classical signatures/keys (informational context)
-- id: TOOL-OPENSSL-SIGN
-  title: "OpenSSL classical signing detected"
+- id: PY-SSL-OLD-PROTO
+  title: "Old TLS protocol selected"
+  description: "Selecting TLSv1/1.1 increases downgrade risks."
   severity: Medium
   regex_any:
     - >-
-      \bopenssl\s+(dgst|pkeyutl)\b.*-sign\b
-  fix: "Prefer PQ or hybrid signatures for long-lived artifacts."
+      ssl\.PROTOCOL_TLSv1(_1)?
+  fix: "Use TLS 1.2+; prefer TLS 1.3."
+  references:
+    - "https://datatracker.ietf.org/doc/rfc8996/"
 
-
-# JWT using classical sig
+# ---------- JWT / Signatures ----------
 - id: PY-JWT-CLASSICAL-SIG
   title: "JWT using classical signature algorithm (RS*/ES*/PS*)"
+  description: "JWT signed with RSA/ECDSA/RSASSA-PSS; plan PQ transition."
   severity: High
   ast:
     any:
@@ -36,42 +36,93 @@
           callee: "jwt.encode"
           kw_in_policy:
             algorithm: "jwt_classical_prefixes"
-  fix: "Plan migration to PQ signatures or shorten token lifetimes."
+  fix: >-
+    Plan migration to PQ signatures (ML-DSA/SLH-DSA/FN-DSA) or shorten token
+    lifetimes during transition.
+  references:
+    - "https://pyjwt.readthedocs.io/"
+    - "https://csrc.nist.gov/projects/post-quantum-cryptography"
 
-# Weak hash usage
+- id: PY-SIG-PQ-NIST
+  title: "NIST-PQ signature configured"
+  description: "Detects oqs.Signature(...) for ML-DSA/SLH-DSA/FN-DSA."
+  severity: Low
+  ast:
+    any:
+      - assign_pq_signature:
+          families: "allowed_or_draft"
+  fix: "None; this is informational."
+  references:
+    - "https://openquantumsafe.org/"
+
+# ---------- Crypto hygiene ----------
 - id: PY-HASH-MD5-SHA1
   title: "Weak hash (MD5/SHA-1) usage"
+  description: "MD5/SHA-1 are collision-prone; avoid for new designs."
   severity: Medium
   regex_any:
     - >-
       \bhashlib\.(md5|sha1)\s*\(
-  fix: "Use SHA-256+; for passwords use a KDF (argon2/scrypt/bcrypt)."
+  fix: "Use SHA-256+; for passwords use argon2/scrypt/bcrypt."
+  references:
+    - "https://www.schneier.com/blog/archives/2005/02/sha1_broken.html"
 
-# AES in ECB mode
 - id: PY-AES-ECB
   title: "AES in ECB mode"
+  description: "ECB leaks patterns; never use for confidentiality."
   severity: High
   regex_any:
     - >-
       modes\.ECB\s*\(
-  fix: "Use an AEAD mode (AES-GCM/ChaCha20-Poly1305)."
+  fix: "Use an AEAD mode (AES-GCM or ChaCha20-Poly1305)."
+  references:
+    - "https://nvlpubs.nist.gov/nistpubs/legacy/sp/nistspecialpublication800-38a.pdf"
 
-# Old TLS protocol selected
-- id: PY-SSL-OLD-PROTO
-  title: "Old TLS protocol selected"
+# ---------- X.509 / SSH / RSA keys ----------
+- id: PY-X509-CLASSICAL
+  title: "X.509 signing with classical algorithm"
+  description: "Classical cert/CSR signatures (RSA/ECDSA) detected."
+  severity: High
+  regex_any:
+    - >-
+      \bx509\b.*\b(sign|builder)\b.*\b(RSA|ECDSA)\b
+  fix: "Plan PQ or hybrid certificate strategies; reduce validity periods."
+
+- id: PY-SSH-HOSTKEY-RSA
+  title: "SSH host key set to RSA (classical)"
+  description: "RSA host keys are classical; consider PQ/hybrid when available."
   severity: Medium
   regex_any:
     - >-
-      ssl\.PROTOCOL_TLSv1(_1)?
-  fix: "Use TLS 1.2+; prefer TLS 1.3."
+      ssh-rsa
+  fix: "Prefer PQ/hybrid SSH when available; rotate keys during transition."
 
-# OpenSSL generating RSA key
+- id: PY-RSA-KEYGEN-LOWBITS
+  title: "RSA key generation with low bit length"
+  description: "Short RSA keys are weak and classical."
+  severity: Medium
+  regex_any:
+    - >-
+      rsa\.generate_private_key\([^\)]*\bkey_size\s*=\s*(512|1024)\b
+  fix: "Use ≥2048 bits and plan migration away from RSA."
+
+# ---------- Tooling (OpenSSL) ----------
 - id: TOOL-OPENSSL-GENRSA
   title: "OpenSSL generating RSA key"
+  description: "CLI generation of new RSA keys (classical)."
   severity: High
   regex_any:
     - >-
       \bopenssl\s+genrsa\b
   fix: "Avoid new RSA keys for long-lived assets; plan PQ/hybrid migration."
+
+- id: TOOL-OPENSSL-SIGN
+  title: "OpenSSL classical signing detected"
+  description: "OpenSSL digest or pkeyutl signing on the CLI."
+  severity: Medium
+  regex_any:
+    - >-
+      \bopenssl\s+(dgst|pkeyutl)\b.*-sign\b
+  fix: "Prefer PQ or hybrid signatures for long-lived artifacts."
 
 # yamllint enable rule:line-length
