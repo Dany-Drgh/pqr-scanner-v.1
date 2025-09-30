@@ -6,6 +6,19 @@ from pathlib import Path
 from .core.scanner import scan_path
 
 
+# Map severities (case-insensitive) to an order for comparisons
+def _sev_ord(s: str) -> int:
+    s = (s or "").strip().lower()
+    return {
+        "info": 1,
+        "low": 1,
+        "medium": 2,
+        "med": 2,
+        "high": 3,
+        "critical": 4,
+    }.get(s, 2)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="pqr", description="PQC readiness scanner (Python MVP)"
@@ -22,6 +35,11 @@ def main() -> int:
     )
     p_scan.add_argument(
         "--rulepack", default="latest", help="Rulepack label (e.g., latest, v0.1)"
+    )
+    p_scan.add_argument(
+        "--policy",
+        default="latest",
+        help="Policy label (see pqr/policy/index.yaml), e.g. latest, nist-stable",
     )
     p_scan.add_argument(
         "--outdir",
@@ -42,13 +60,14 @@ def main() -> int:
         default=["md", "json", "sarif"],
         help="Which report formats to write (any of: md json sarif)",
     )
+    p_scan.add_argument(
+        "--fail-on-severity",
+        choices=["none", "low", "medium", "high", "critical"],
+        default="none",
+        help="Exit non-zero if any finding meets/exceeds this severity",
+    )
     p_scan.add_argument("--debug", action="store_true", help="Print debug info")
 
-    p_scan.add_argument(
-        "--policy",
-        default="latest",
-        help="Policy label to use (see pqr/policy/index.yaml, e.g. latest, nist-stable, nist-draft)",
-    )
     args = parser.parse_args()
 
     if args.cmd == "scan":
@@ -57,17 +76,25 @@ def main() -> int:
             root,
             ignore_globs=args.ignore_paths,
             rulepack_label=args.rulepack,
+            policy_label=args.policy,
             debug=args.debug,
             outdir=args.outdir,
             timestamped=args.timestamped,
             append=args.append,
             formats=args.formats,
-            policy_label=args.policy,
         )
+
         print(f"Scanned: {root}")
         print(f"Findings: {len(findings)} (see {args.outdir})")
-        # Optional: keep your existing --fail-on-severity logic if you added it earlier.
-        return 1 if findings else 0
+
+        # Gate on severity
+        if args.fail_on_severity != "none":
+            threshold = _sev_ord(args.fail_on_severity)
+            should_fail = any(_sev_ord(f.severity) >= threshold for f in findings)
+            return 1 if should_fail else 0
+
+        # Default: do not fail just for having findings
+        return 0
 
     return 0
 
