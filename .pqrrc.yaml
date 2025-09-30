@@ -1,0 +1,12 @@
+---
+policy: nist-stable
+rulepack: latest
+ignore-paths:
+  - "tests/**"
+  - "**/migrations/**"
+formats: ["md", "json", "sarif"]
+fail-on-severity: none
+baseline:
+  file: ".pqr/baseline.json"
+  use: false
+  update: false

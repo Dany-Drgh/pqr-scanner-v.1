@@ -13,6 +13,11 @@ from .rules_engine import load_rules
 from .policy import load_policy, Policy
 from ..analyzers.python_ast import analyze_python_file
 
+SUPPRESS_LINE_RE = re.compile(r"pqr\s*:\s*ignore\s*=\s*([^\s#]+)", re.IGNORECASE)
+SUPPRESS_FILE_RE = re.compile(
+    r"^\s*#\s*pqr\s*:\s*ignore-file\s*$", re.IGNORECASE | re.MULTILINE
+)
+
 DEFAULT_IGNORES = [
     "**/.git/**",
     "**/.hg/**",
@@ -47,6 +52,19 @@ class Finding:
     line: int
     evidence: str
     fix: str
+
+
+def _parse_inline_ignores(line: str) -> set[str]:
+    """
+    Parse 'pqr: ignore=RULE1,RULE2' in a single line.
+    Returns a set of tokens (uppercased). '*' or 'ALL' means ignore all.
+    """
+    m = SUPPRESS_LINE_RE.search(line or "")
+    if not m:
+        return set()
+    raw = m.group(1)
+    toks = [t.strip().upper() for t in raw.split(",") if t.strip()]
+    return set(toks)
 
 
 def _iter_files(root: Path, ignore_globs: Iterable[str]) -> Iterable[Path]:
@@ -92,6 +110,9 @@ def _match_regex_rule_on_text(
     for lineno, line in enumerate(text.splitlines(), start=1):
         for pat in patterns:
             if pat.search(line):
+                ign = _parse_inline_ignores(line)
+                if ign and ("ALL" in ign or "*" in ign or rule["id"].upper() in ign):
+                    continue
                 out.append(
                     Finding(
                         id=rule["id"],
@@ -206,6 +227,10 @@ def _match_ast_rule_on_events(
     for ev in events:
         for pat in patterns_any:
             if "call" in pat and _call_event_matches(pat["call"], ev, ctx, policy):
+                ev_line = ev.get("evidence") or ""
+                ign = _parse_inline_ignores(ev_line)
+                if ign and ("ALL" in ign or "*" in ign or rule["id"].upper() in ign):
+                    continue
                 out.append(
                     Finding(
                         id=rule["id"],
@@ -340,6 +365,7 @@ def scan_path(
     append: bool = False,
     formats: List[str] = None,
     policy_label: str = "latest",
+    baseline: set[tuple[str, str, int]] | None = None,
 ):
     rules = load_rules(rulepack_label)
     if debug:
@@ -368,6 +394,11 @@ def scan_path(
     for fp in files:
         try:
             txt = fp.read_text(encoding="utf-8", errors="ignore")
+            # File-level suppression (first lines or anywhere)
+            if SUPPRESS_FILE_RE.search("\n".join(txt.splitlines()[:10])):
+                if debug:
+                    print(f"[pqr] skip (ignore-file): {fp}")
+                continue
         except Exception:
             continue
 
@@ -394,13 +425,29 @@ def scan_path(
                     findings.append(fg)
                     seen.add(key)
 
-    out_path = _prepare_outdir(root, outdir, timestamped, append)
+        out_path = _prepare_outdir(root, outdir, timestamped, append)
     meta = {
         "rulepack": rulepack_label,
         "policy": policy.id,
         "policyVersion": policy.version,
         "outdir": outdir,
     }
+
+    # ✅ Only reassign findings when a baseline is provided
+    if baseline:
+        root_res = root.resolve()
+        filtered: List[Finding] = []
+        for fg in findings:
+            try:
+                rel = str(Path(fg.file).resolve().relative_to(root_res))
+            except Exception:
+                # Fallback if file isn't under root for any reason
+                rel = str(Path(fg.file))
+            key = (fg.id, rel, fg.line)
+            if key not in baseline:
+                filtered.append(fg)
+        findings = filtered
+
     write_reports(out_path, findings, formats or ["md", "json", "sarif"], meta)
     if debug:
         print(f"[pqr] Wrote reports to {out_path}")
