@@ -197,7 +197,7 @@ def analyze_python_file(
                                     }
                                 )
 
-            # from oqs import Signature; Signature("ALG")
+            # Direct Signature(...) if imported directly
             if isinstance(call.func, ast.Name) and call.func.id in {
                 "Signature",
                 *signature_ctor_names,
